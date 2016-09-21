@@ -507,14 +507,7 @@ namespace Microsoft.AspNetCore.Authentication.OpenIdConnect
                 // if any of the error fields are set, throw error null
                 if (!string.IsNullOrEmpty(authorizationResponse.Error))
                 {
-                    Logger.AuthorizationResponseError(
-                        authorizationResponse.Error,
-                        authorizationResponse.ErrorDescription ?? "ErrorDecription null",
-                        authorizationResponse.ErrorUri ?? "ErrorUri null");
-
-                    return AuthenticateResult.Fail(new OpenIdConnectProtocolException(
-                        string.Format(CultureInfo.InvariantCulture, Resources.MessageContainsError, authorizationResponse.Error,
-                        authorizationResponse.ErrorDescription ?? "ErrorDecription null", authorizationResponse.ErrorUri ?? "ErrorUri null")));
+                    return FailByAuthenticationResponse(authorizationResponse);
                 }
 
                 if (_configuration == null && Options.ConfigurationManager != null)
@@ -583,6 +576,11 @@ namespace Microsoft.AspNetCore.Authentication.OpenIdConnect
                     if (!authorizationCodeReceivedContext.HandledCodeRedemption)
                     {
                         tokenEndpointResponse = await RedeemAuthorizationCodeAsync(tokenEndpointRequest);
+                    }
+
+                    if (!string.IsNullOrEmpty(tokenEndpointResponse.Error))
+                    {
+                        return FailByAuthenticationResponse(tokenEndpointResponse);
                     }
 
                     var tokenResponseReceivedContext = await RunTokenResponseReceivedEventAsync(authorizationResponse, tokenEndpointResponse, properties);
@@ -691,13 +689,21 @@ namespace Microsoft.AspNetCore.Authentication.OpenIdConnect
         protected virtual async Task<OpenIdConnectMessage> RedeemAuthorizationCodeAsync(OpenIdConnectMessage tokenEndpointRequest)
         {
             Logger.RedeemingCodeForTokens();
+
             var requestMessage = new HttpRequestMessage(HttpMethod.Post, _configuration.TokenEndpoint);
             requestMessage.Content = new FormUrlEncodedContent(tokenEndpointRequest.Parameters);
+
             var responseMessage = await Backchannel.SendAsync(requestMessage);
-            responseMessage.EnsureSuccessStatusCode();
-            var tokenResonse = await responseMessage.Content.ReadAsStringAsync();
-            var jsonTokenResponse = JObject.Parse(tokenResonse);
-            return new OpenIdConnectMessage(jsonTokenResponse);
+            var message = new OpenIdConnectMessage(await responseMessage.Content.ReadAsStringAsync());
+
+            if (string.IsNullOrEmpty(message.Error))
+            {
+                // If error doesn't present in the response content ensure the response successed.
+                // If this happens, it is an authentication server error.
+                responseMessage.EnsureSuccessStatusCode();
+            }
+
+            return message;
         }
 
         /// <summary>
@@ -1156,6 +1162,21 @@ namespace Microsoft.AspNetCore.Authentication.OpenIdConnect
             }
 
             return BuildRedirectUri(uri);
+        }
+
+        private AuthenticateResult FailByAuthenticationResponse(OpenIdConnectMessage response)
+        {
+            var description = response.ErrorDescription ?? "error_description is null";
+            var errorUri = response.ErrorUri ?? "error_uri is null";
+
+            Logger.AuthorizationResponseError(response.Error, description, errorUri);
+
+            return AuthenticateResult.Fail(new OpenIdConnectProtocolException(string.Format(
+                CultureInfo.InvariantCulture,
+                Resources.MessageContainsError,
+                response.Error,
+                description,
+                errorUri)));
         }
     }
 }
